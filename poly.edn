@@ -1,0 +1,7 @@
+{:poly
+ {:projects {}
+  :bases    {:api {}}
+  :components {:core {} :malli {} :registry {} :macros {} :client {}}
+  :output   {:dirs ["resources" "bricks" "bases" "projects"]}
+  :test     {:paths ["test"]}
+  :repo     {:name "clj8"}}}

@@ -1,0 +1,26 @@
+**/classes
+**/target
+**/.cpcache
+**/.DS_Store
+
+# IntelliJ-related
+*.iws
+*.ipr
+*.iml
+.idea/*
+!.idea/runConfigurations/REPL.xml
+!.idea/clojure-deps.xml
+
+# REPL-related
+.nrepl-port
+
+# Project specific
+database.db
+test.db
+
+# VSCode-related
+**/.calva/*
+.clj-kondo/*
+out/*
+.lsp/*
+**/.portal

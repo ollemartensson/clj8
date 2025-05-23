@@ -1,0 +1,24 @@
+{:aliases   {:dev {:extra-paths ["development/src"]
+                   :extra-deps {org.clojure/clojure {:mvn/version "1.11.1"}
+                                clj8/registry {:local/root "bricks/registry"}
+                                clj8/malli    {:local/root "bricks/malli"}
+                                clj8/client   {:local/root "bricks/client"}
+                                clj8/macros   {:local/root "bricks/macros"}
+                                clj8/api      {:local/root "bases/api"}}}
+
+             :test {:extra-paths ["test" "../registry/test"] ; Added ../registry/test
+                    :extra-deps  {io.github.cognitect-labs/test-runner
+                                  {:git/tag "v0.5.1" :git/sha "b3fd0d2"}
+                                  org.clojure/test.check {:mvn/version "1.1.1"}}
+                    :main-opts   ["-m" "cognitect.test-runner"]
+                    :exec-fn cognitect.test-runner.api/test}
+
+             :poly {:main-opts ["-m" "polylith.clj.core.poly-cli.core"]
+                    :extra-deps {polylith/clj_poly {:mvn/version "0.2.21"}}}} ; Corrected to clj_poly
+
+ :deps
+ {cheshire/cheshire {:mvn/version "5.12.0"}
+  metosin/malli {:mvn/version "0.16.1"}
+  metosin/spec-tools {:mvn/version "0.10.5"}
+  org.clojure/clojure {:mvn/version "1.11.1"}
+  clj-http/clj-http {:mvn/version "3.12.3"}}}
