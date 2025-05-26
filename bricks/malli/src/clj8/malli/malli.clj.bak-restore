@@ -1,0 +1,310 @@
+(ns clj8.malli.malli
+  (:require
+   [clj8.registry.registry :as reg]
+   [clojure.string :as str]
+   [malli.core :as m]
+   [malli.registry :as mr]))
+
+;; ----------------------------------------------------------------------------
+;; Configuration & State
+;; ----------------------------------------------------------------------------
+(defonce openapi-spec (atom nil))
+
+(defn load-openapi-spec [spec]
+  (reset! openapi-spec spec))
+
+;; ----------------------------------------------------------------------------
+;; OpenAPI to Malli Schema Conversion
+;; ----------------------------------------------------------------------------
+(defn- ref->id [ref-str]
+  (-> ref-str
+      (str/split #"/")
+      last
+      keyword))
+
+(defn- resolve-ref [ref-str full-openapi-spec]
+  (let [path (->> (str/split ref-str #"/")
+                  (drop 1) ; remove #
+                  (map keyword))]
+    (get-in full-openapi-spec path)))
+
+(defn- openapi->malli-primitive [type format]
+  (case type
+    "string" (case format
+               "date" :string ; or use a custom date schema
+               "date-time" :string ; or use a custom date-time schema
+               "byte" :string ; Base64 encoded
+               "binary" :string ; any sequence of octets
+               :string)
+    "number" (case format
+               "float" :float
+               "double" :double
+               :double) ; Default for number
+    "integer" (case format
+                "int32" :int
+                "int64" :int
+                :int) ; Default for integer
+    "boolean" :boolean
+    "null" :nil
+    :any)) ; Fallback for unknown types
+
+;; Forward declaration for mutual recursion
+(declare convert-schema*)
+
+(defn- get-key [m k]
+  (cond
+    (keyword? k) (or (get m k) (get m (name k)))
+    (string? k) (or (get m k) (get m (keyword k)))
+    :else (get m k)))
+
+;; UPDATED: convert-map* and convert-schema* now take ref-visited and object-stack sets for cycle protection.
+(defn- convert-map*
+  "Convert OpenAPI object schema to Malli map schema form."
+  ([m full-openapi-spec]
+   (convert-map* m full-openapi-spec #{} #{})) ; Initialize ref-visited and object-stack
+  ([m full-openapi-spec ref-visited object-stack]
+   (let [properties (get-key m "properties")
+         required (get-key m "required")
+         additionalProperties (get-key m "additionalProperties")
+         req-set (set (map name required))
+         entries (when properties
+                   (mapv (fn [[prop-k v]]
+                           (let [k (keyword prop-k)] ; Ensure keyword for map entries
+                             [k (if (req-set (name k))
+                                  (convert-schema* v full-openapi-spec ref-visited object-stack)
+                                  [:maybe (convert-schema* v full-openapi-spec ref-visited object-stack)])]))
+                         properties))]
+     (cond
+       (seq entries)
+       (into [:map] entries)
+
+       (map? additionalProperties)
+       [:map-of :keyword (convert-schema* additionalProperties full-openapi-spec ref-visited object-stack)]
+
+       (= true additionalProperties)
+       [:map-of :keyword :any]
+
+       :else
+       :map)))) ; Represents an empty map schema, or a map with no discernible properties/additionalProperties
+
+(defn convert-schema*
+  "Recursively convert an OpenAPI schema fragment into a Malli schema form."
+  ([schema full-openapi-spec]
+   (convert-schema* schema full-openapi-spec #{} #{})) ; Initialize ref-visited and object-stack
+  ([schema full-openapi-spec ref-visited object-stack]
+   (when schema
+     (let [schema (if (and (map? schema) (contains? schema :schema))
+                    (:schema schema)
+                    schema)]
+       (cond
+         ;; 1. Check for direct object cycle using object identity on the stack
+         (and (map? schema) (object-stack schema))
+         (do
+           (println (str "WARN: Direct object cycle detected. Schema sample: " (pr-str (select-keys schema ["type" "format" "$ref" "properties" "items"])) ". Returning :any to break cycle."))
+           :any)
+         :else
+         (let [current-object-stack (if (map? schema) (conj object-stack schema) object-stack)
+               ref-str (get-key schema "$ref")
+               t       (get-key schema "type")
+               fmt     (get-key schema "format")
+               allOf-schemas (get-key schema "allOf")
+               oneOf-schemas (get-key schema "oneOf")
+               anyOf-schemas (get-key schema "anyOf")]
+           (cond
+             ref-str
+             (let [ref-id (ref->id ref-str)]
+               (println "DEBUG: convert-schema* $ref: ref-str=" ref-str ", ref-id=" ref-id)
+               (if (ref-visited ref-id)
+                 ref-id
+                 (let [resolved-schema (resolve-ref ref-str full-openapi-spec)]
+                   (println "DEBUG: convert-schema* $ref: resolved-schema=" resolved-schema)
+                   (if resolved-schema
+                     (convert-schema* resolved-schema full-openapi-spec (conj ref-visited ref-id) #{})
+                     (do (println (str "WARN: $ref not found in spec: " ref-str))
+                         :clj8.malli/unresolved-ref)))))
+             oneOf-schemas
+             (into [:or] (map #(convert-schema* % full-openapi-spec ref-visited current-object-stack) oneOf-schemas))
+             anyOf-schemas
+             (into [:or] (map #(convert-schema* % full-openapi-spec ref-visited current-object-stack) anyOf-schemas))
+             t
+             (case t
+               "object" (convert-map* schema full-openapi-spec ref-visited current-object-stack)
+               "array"
+               (let [items-schema (get-key schema "items")
+                     converted-items (convert-schema* items-schema full-openapi-spec ref-visited current-object-stack)]
+                 (println "DEBUG: convert-schema* array: items-schema=" items-schema ", converted-items=" converted-items)
+                 [:vector (or converted-items :any)])
+               (let [primitive (openapi->malli-primitive t fmt)]
+                 (println "DEBUG: convert-schema* primitive: t=" t ", fmt=" fmt ", primitive=" primitive)
+                 primitive))
+             allOf-schemas
+             (let [converted-schemas (map #(convert-schema* % full-openapi-spec ref-visited current-object-stack) allOf-schemas)]
+               (if (every? #(and (vector? %) (= :map (first %))) converted-schemas)
+                 (reduce (fn [acc-schema current-schema]
+                           (into acc-schema (rest current-schema)))
+                         [:map]
+                         converted-schemas)
+                 (into [:and] converted-schemas)))
+             (map? schema)
+             (if (empty? schema)
+               (do (println "DEBUG: convert-schema* map? empty schema, returning :any. schema=" schema) :any)
+               (if (or (get-key schema "properties")
+                       (get-key schema "additionalProperties"))
+                 (convert-map* schema full-openapi-spec ref-visited current-object-stack)
+                 (do (println (str "WARN: Unknown schema map structure (no type, no $ref, no known structuring properties). Schema sample: " (pr-str (select-keys schema ["type" "format" "$ref" "properties" "items" "additionalProperties" "allOf" "oneOf" "anyOf"])) ". Returning :any."))
+                     (println "DEBUG: convert-schema* fallback :any, schema=" schema)
+                     :any)))
+             :else
+             (do (println (str "WARN: Unexpected schema structure encountered: " (pr-str schema) ". Returning as-is."))
+                 schema)))))))
+
+;; ----------------------------------------------------------------------------
+;; Malli Schema Post-processing (using m/walk as per tips)
+;; ----------------------------------------------------------------------------
+(defn- conversion-marker-post-processor
+  "A walker function for m/walk to add a marker property to all schema parts."
+  [schema path children _]
+  (println "DEBUG: walker called with schema:" schema "at path:" path)
+  (let [props (or (m/properties schema) {})
+        typ (m/type schema)
+        result (cond
+                 ;; Top-level: always return a compiled schema with marker
+                 (empty? path)
+                 (m/schema (if (m/schema? schema) (m/form schema) schema)
+                           (assoc props :clj8.malli.malli/converted true))
+                 ;; Special case: map entry vector [key-schema value-schema]
+                 (and (vector? schema) (= 3 (count schema)))
+                 (let [[k _ v] schema]
+                   [k nil (if (m/schema? v)
+                            (m/schema (m/form v) (assoc props :clj8.malli.malli/converted true))
+                            (m/schema v (assoc props :clj8.malli.malli/converted true)))])
+                 (m/schema? schema)
+                 (m/schema (m/form schema) (assoc props :clj8.malli.malli/converted true))
+                 (keyword? typ)
+                 (m/schema (m/form schema) (assoc props :clj8.malli.malli/converted true))
+                 (keyword? schema)
+                 (m/schema schema (assoc props :clj8.malli.malli/converted true))
+                 :else
+                 (m/schema (if (and typ (seq children))
+                             (into [typ] (map m/form children))
+                             (or (m/form schema) schema))
+                           (assoc props :clj8.malli.malli/converted true)))]
+    (println "DEBUG: walker returning:" result)
+    result))
+
+;; ----------------------------------------------------------------------------
+;; Malli Lazy Registry
+;; ----------------------------------------------------------------------------
+(defonce malli-registry
+  (delay
+    (if-let [spec @openapi-spec]
+      (mr/lazy-registry
+       (m/default-schemas)
+       (fn [schema-key registry-instance]
+         (try
+           (let [raw-def (or (get-in spec [:components :schemas schema-key])
+                             (get-in spec [:definitions schema-key]))]
+             (if raw-def
+               (do
+                 (println (str ";; Malli: Lazily processing OpenAPI schema: " schema-key))
+                 (let [malli-form (convert-schema* raw-def spec #{schema-key} #{})]
+                   (if malli-form
+                     (let [initial-compiled-schema (try
+                                                     (m/schema malli-form {:registry registry-instance})
+                                                     (catch Exception e
+                                                       (println (str "ERROR: Failed to compile initial schema form for " schema-key ". Form (sample): " (pr-str (take 100 (str malli-form))) ". Error: " e))
+                                                       nil))
+                           final-schema (if initial-compiled-schema
+                                          (try
+                                            (m/walk initial-compiled-schema
+                                                    (m/schema-walker conversion-marker-post-processor))
+                                            (catch Exception e
+                                              (println (str "ERROR: Failed during m/walk for schema " schema-key ". Error: " e))
+                                              initial-compiled-schema))
+                                          nil)]
+
+                       (when (and malli-form (not initial-compiled-schema)) (println (str "WARN: Initial compiled schema for " schema-key " was nil.")))
+                       final-schema)
+                     (do (println (str "WARN: Initial malli form for " schema-key " was nil (after convert-schema*).")) nil))))
+               (do (println (str "WARN: Schema key not found in OpenAPI spec: " schema-key)) nil)))
+           (catch Throwable t
+             (println (str "FATAL ERROR in malli-registry provider for key " schema-key ": " t))
+             nil))))
+      (do
+        (println "ERROR: openapi-spec atom is nil when malli-registry is realized. Registry will be empty or use defaults only.")
+        (mr/lazy-registry (m/default-schemas) (fn [_ _] nil))))))
+
+;; ----------------------------------------------------------------------------
+;; Registry Enrichment
+;; ----------------------------------------------------------------------------
+(defn- resolve-endpoint-schemas
+  "Extracts and converts request/response schema refs from an endpoint map into Malli schemas."
+  [ep spec]
+  (let [body-param (some #(when (= "body" (get-key % "in")) %) (get-key ep :parameters))
+        body-ref   (get-key body-param "schema")
+        success-resp (let [resps (get-key ep :responses)]
+                       (or (get-key resps "200")
+                           (get-key resps "201")
+                           (get-key resps "204")
+                           (first (vals resps))))
+        success-ref (when success-resp
+                      (or (get-key (get-key success-resp "content") "application/json")
+                          (get-key success-resp "schema")))
+        req-schema    (when body-ref
+                        (convert-schema* body-ref spec #{} #{}))
+        resp-schema   (when success-ref
+                        (convert-schema* success-ref spec #{} #{}))]
+    (if (and (nil? req-schema) (nil? resp-schema) body-ref success-ref)
+      (do (println (str "WARN: Both req-schema and resp-schema are nil for op " (get-key ep :operationId)
+                        ". Body ref: " (pr-str body-ref) ", Success ref: " (pr-str success-ref)))
+          {:malli/request-schema nil :malli/response-schema nil})
+      {:malli/request-schema  req-schema
+       :malli/response-schema resp-schema})))
+
+(defn enrich-registry-with-malli
+  "Enriches the raw registry with Malli schemas for request and response bodies.
+  If no path is provided, uses default OpenAPI-path."
+  ([]
+   (enrich-registry-with-malli "resources/k8s-openapi.json"))
+  ([openapi-path]
+   (let [spec    (reg/load-openapi-spec openapi-path)
+         _       (load-openapi-spec spec) ; Ensure global atom is set for malli-registry
+         raw-reg (reg/get-registry)]
+     (if (nil? spec)
+       (do (println "ERROR: OpenAPI spec is nil in enrich-registry-with-malli. Cannot enrich.")
+           raw-reg) ; Return raw registry if spec is nil
+       (->> raw-reg
+            (map (fn [[k v]]
+                   [k (merge v (resolve-endpoint-schemas v spec))]))
+            (into {}))))))
+
+;; ----------------------------------------------------------------------------
+;; Public API
+;; ----------------------------------------------------------------------------
+(defn openapi->malli-registry
+  "Loads an OpenAPI spec from the given path and ensures the malli-registry uses it.
+   Returns the active malli registry."
+  [openapi-json-path]
+  (let [spec (reg/load-openapi-spec openapi-json-path)]
+    (load-openapi-spec spec)
+    @malli-registry))
+
+(defn get-malli-schema
+  "Retrieves a Malli schema by its key from the loaded OpenAPI spec.
+   The key should be a keyword, e.g., :io.k8s.api.core.v1.Node."
+  ([schema-key]
+   (get-malli-schema schema-key @malli-registry))
+  ([schema-key registry]
+   (m/schema schema-key registry)))
+
+(defn validate-malli-schema
+  "Validates data against a Malli schema retrieved by its key."
+  [schema-key data]
+  (let [schema (get-malli-schema schema-key)]
+    (m/validate schema data)))
+
+(defn explain-malli-schema
+  "Provides an explanation of why data does not conform to a Malli schema."
+  [schema-key data]
+  (let [schema (get-malli-schema schema-key)]
+    (m/explain schema data)))

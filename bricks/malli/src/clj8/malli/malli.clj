@@ -1,149 +1,191 @@
 (ns clj8.malli.malli
+  "Converts OpenAPI schemas to Malli schemas for validation, coercion, and generation."
   (:require [malli.core :as m]
-            [malli.generator :as mg] ; Added malli.generator
-            [clojure.string :as str]
-            [clj8.registry.registry :as reg])) ; Assuming registry loads the spec
+            [malli.error :as me]
+            [malli.transform :as mt]
+            [malli.generator :as mg]
+            [clojure.string :as str]))
 
-;; Malli schema registry
-(defonce malli-schema-registry (atom {}))
-
-(defn openapi-type->malli-type [openapi-type format]
-  (case openapi-type
-    "string" (case format
-               "date" :string ; refine later with malli.experimental.time if needed
-               "date-time" :string ; refine later
-               "byte" :string ; base64 encoded
-               "binary" :string ; sequence of bytes
-               :string)
-    "number" (case format
-               "float" :float
-               "double" :double
-               :double) ; Default for number
-    "integer" (case format
-                "int32" :int
-                "int64" :int
-                :int) ; Default for integer
-    "boolean" :boolean
-    "array" :vector
-    "object" :map
-    nil)) ; For refs or other complex types handled separately
-
-(defn resolve-ref [ref-str openapi-spec]
-  (let [parts (str/split ref-str #"/")
-        path (rest parts)] ; drop #
-    (get-in openapi-spec path)))
-
-(declare openapi-schema->malli-schema) ; Declare for mutual recursion
-
-(defn properties->malli-schema [properties required openapi-spec definitions-path]
-  (into [:map]
-        (for [[prop-name prop-schema] properties]
-          (let [resolved-prop-schema (if (:type prop-schema)
-                                       prop-schema
-                                       (resolve-ref (:$ref prop-schema) openapi-spec))]
-            [(keyword prop-name)
-             (if (some #(= prop-name %) required)
-               (openapi-schema->malli-schema resolved-prop-schema openapi-spec definitions-path)
-               [:orn
-                [:required (openapi-schema->malli-schema resolved-prop-schema openapi-spec definitions-path)]
-                [:optional [:maybe (openapi-schema->malli-schema resolved-prop-schema openapi-spec definitions-path)]]])]))))
-
-(defn openapi-schema->malli-schema
-  "Converts a single OpenAPI schema definition to a Malli schema."
-  [openapi-schema openapi-spec definitions-path]
-  (when openapi-schema
+(defn openapi-type->malli
+  "Converts OpenAPI type to Malli schema type.
+  
+  Args:
+    type-def: OpenAPI type definition map
+    
+  Returns:
+    Malli schema"
+  [type-def]
+  (let [type (get type-def "type")
+        format (get type-def "format")
+        enum (get type-def "enum")]
     (cond
-      (:$ref openapi-schema)
-      (let [ref-path (get openapi-schema :$ref)
-            ref-name (last (str/split ref-path #"/"))
-            cached (get @malli-schema-registry (keyword ref-name))]
-        (if cached
-          cached
-          (let [resolved-schema (resolve-ref ref-path openapi-spec)]
-            (if (= (conj definitions-path ref-name) definitions-path) ; Avoid infinite loop for self-references
-              (keyword ref-name) ; Return keyword for recursive structures
-              (openapi-schema->malli-schema resolved-schema openapi-spec (conj definitions-path ref-name))))))
+      enum [:enum (mapv keyword enum)]
 
-      :else
-      (let [openapi-type (get openapi-schema "type")
-            format (get openapi-schema "format")]
-        (case openapi-type
-          "object"
-          (if-let [props (get openapi-schema "properties")]
-            (properties->malli-schema props (get openapi-schema "required") openapi-spec definitions-path)
-            (if-let [add-props (get openapi-schema "additionalProperties")]
-              (if (true? add-props)
-                [:map-of :keyword :any] ; Allows any additional properties
-                [:map-of :keyword (openapi-schema->malli-schema add-props openapi-spec definitions-path)])
-              :map)) ; Default for object if no properties or additionalProperties
+      (= type "string") (case format
+                          "date-time" :string  ; Could be enhanced with regex
+                          "date" :string
+                          "uuid" :string
+                          :string)
 
-          "array"
-          (if-let [items-schema (get openapi-schema "items")]
-            [:vector (openapi-schema->malli-schema items-schema openapi-spec definitions-path)]
-            [:vector :any]) ; Default for array if no items schema
+      (= type "integer") (case format
+                           "int32" :int
+                           "int64" :int
+                           :int)
 
-          (openapi-type->malli-type openapi-type format))))))
+      (= type "number") (case format
+                          "float" :double
+                          "double" :double
+                          :double)
 
+      (= type "boolean") :boolean
 
-(defn build-malli-schemas-from-openapi
-  "Builds Malli schemas from the #/components/schemas part of an OpenAPI spec."
-  ([]
-   (let [openapi-spec (reg/load-openapi-spec)]
-     (build-malli-schemas-from-openapi openapi-spec)))
-  ([openapi-spec]
-   (let [component-schemas (get-in openapi-spec ["components" "schemas"])]
-     (doseq [[schema-name schema-def] component-schemas]
-       (when-not (get @malli-schema-registry (keyword schema-name))
-         ;; Register with a placeholder for circular dependencies
-         (swap! malli-schema-registry assoc (keyword schema-name) [:schema {:registry @malli-schema-registry} (keyword schema-name)])
-         (let [malli-s (openapi-schema->malli-schema schema-def openapi-spec [(keyword schema-name)])]
-           (swap! malli-schema-registry assoc (keyword schema-name) malli-s))))
-     @malli-schema-registry)))
+      (= type "array") (if-let [items (get type-def "items")]
+                         [:vector (openapi-type->malli items)]
+                         [:vector :any])
 
-;; Initialize the registry
-(defonce malli-registry (delay (build-malli-schemas-from-openapi)))
+      (= type "object") (if-let [props (get type-def "properties")]
+                          [:map (convert-object-properties props type-def)]
+                          [:map])
 
-(defn get-malli-schema
-  "Retrieves a Malli schema by its keyword name from the registry."
-  [schema-key]
-  (get @malli-registry schema-key))
+      :else :any)))
 
-(defn validate
-  "Validates data against a Malli schema."
-  [schema-key data]
-  (m/validate (get-malli-schema schema-key) data))
+(defn convert-object-properties
+  "Converts OpenAPI object properties to Malli map schema.
+  
+  Args:
+    properties: OpenAPI properties map
+    type-def: Full OpenAPI type definition (for required fields)
+    
+  Returns:
+    Vector of Malli map entries"
+  [properties type-def]
+  (let [required-fields (set (get type-def "required" []))]
+    (mapv (fn [[prop-name prop-def]]
+            (let [key (keyword prop-name)
+                  schema (openapi-type->malli prop-def)
+                  optional? (not (contains? required-fields prop-name))]
+              (if optional?
+                [key {:optional true} schema]
+                [key schema])))
+          properties)))
 
-(defn explain
-  "Explains why data fails validation against a Malli schema."
-  [schema-key data]
-  (m/explain (get-malli-schema schema-key) data))
+(defn resolve-ref
+  "Resolves OpenAPI $ref to actual schema definition.
+  
+  Args:
+    ref-str: $ref string like '#/components/schemas/Pod'
+    spec: Full OpenAPI specification
+    
+  Returns:
+    Resolved schema definition"
+  [ref-str spec]
+  (let [path (-> ref-str
+                 (str/replace "#/" "")
+                 (str/split #"/"))]
+    (get-in spec path)))
 
-(defn coerce
-  "Coerces data using a Malli schema."
-  [schema-key data]
-  (m/coerce (get-malli-schema schema-key) data))
+(defn convert-schema
+  "Converts OpenAPI schema to Malli schema, resolving references.
+  
+  Args:
+    schema-def: OpenAPI schema definition (may contain $ref)
+    spec: Full OpenAPI specification for reference resolution
+    
+  Returns:
+    Malli schema"
+  [schema-def spec]
+  (if-let [ref (get schema-def "$ref")]
+    (let [resolved (resolve-ref ref spec)]
+      (convert-schema resolved spec))
+    (openapi-type->malli schema-def)))
 
-(defn generate
-  "Generates sample data from a Malli schema."
-  [schema-key & [opts]] ; Made opts optional and updated function signature
-  (mg/generate (get-malli-schema schema-key) opts)) ; Changed to mg/generate
+(defn extract-schemas
+  "Extracts all schemas from OpenAPI spec and converts to Malli.
+  
+  Args:
+    spec: OpenAPI specification
+    
+  Returns:
+    Map of schema-name -> malli-schema"
+  [spec]
+  (let [schemas (get-in spec ["components" "schemas"])]
+    (->> schemas
+         (map (fn [[schema-name schema-def]]
+                [(keyword schema-name) (convert-schema schema-def spec)]))
+         (into {}))))
 
-;; Example usage (for dev and testing)
-(comment
-  (reg/load-openapi-spec) ;; to ensure registry is loaded if not already
-  (def k8s-malli-registry (build-malli-schemas-from-openapi))
-  (count k8s-malli-registry)
+(defn validate-with-schema
+  "Validates data against a Malli schema.
+  
+  Args:
+    schema: Malli schema
+    data: Data to validate
+    
+  Returns:
+    {:valid? boolean :errors [...] :data data}"
+  [schema data]
+  (let [valid? (m/validate schema data)]
+    {:valid? valid?
+     :errors (when-not valid? (me/humanize (m/explain schema data)))
+     :data data}))
 
-  (get-malli-schema :io.k8s.api.core.v1.Pod)
-  (m/schema? (get-malli-schema :io.k8s.api.core.v1.Pod))
+(defn generate-sample
+  "Generates sample data from Malli schema.
+  
+  Args:
+    schema: Malli schema
+    
+  Returns:
+    Generated sample data"
+  [schema]
+  (mg/generate schema))
 
-  (explain :io.k8s.api.core.v1.Pod {:spec {:containers [{:name "nginx"}]}})
+(defn create-coercer
+  "Creates a coercer for transforming data to match schema.
+  
+  Args:
+    schema: Malli schema
+    
+  Returns:
+    Coercion function"
+  [schema]
+  (m/coercer schema mt/string-transformer))
 
-  (validate :io.k8s.api.core.v1.Pod
-            {:apiVersion "v1"
-             :kind "Pod"
-             :metadata {:name "test-pod"}
-             :spec {:containers [{:name "my-container"
-                                  :image "nginx"}]}})
+;; Schema registry for caching converted schemas
+(defonce ^:private schema-registry (atom {}))
 
-  (generate :io.k8s.api.core.v1.Pod {:size 2}))
+(defn get-schema
+  "Gets cached Malli schema by name, converting if needed.
+  
+  Args:
+    schema-name: Keyword name of schema
+    spec: OpenAPI specification (optional, for conversion)
+    
+  Returns:
+    Malli schema or nil"
+  [schema-name & [spec]]
+  (or (get @schema-registry schema-name)
+      (when spec
+        (let [schemas (extract-schemas spec)
+              schema (get schemas schema-name)]
+          (when schema
+            (swap! schema-registry assoc schema-name schema)
+            schema)))))
+
+(defn register-schema!
+  "Registers a Malli schema in the cache.
+  
+  Args:
+    schema-name: Keyword name
+    schema: Malli schema
+    
+  Returns:
+    schema"
+  [schema-name schema]
+  (swap! schema-registry assoc schema-name schema)
+  schema)
+
+(defn clear-registry!
+  "Clears the schema registry cache."
+  []
+  (reset! schema-registry {}))
