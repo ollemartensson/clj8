@@ -1,0 +1,32 @@
+{:deps {org.clojure/clojure {:mvn/version "1.11.1"}
+        org.clojure/tools.deps.alpha {:mvn/version "0.15.1244"}
+
+        ;; All bricks via interfaces
+        clj8/core {:local/root "../../bricks/core"}
+        clj8/registry {:local/root "../../bricks/registry"}
+        clj8/malli {:local/root "../../bricks/malli"}
+        clj8/client {:local/root "../../bricks/client"}
+        clj8/macros {:local/root "../../bricks/macros"}
+
+        ;; Base
+        clj8/api {:local/root "../../bases/api"}
+
+        ;; Test dependencies  
+        org.clojure/test.check {:mvn/version "1.1.1"}
+        metosin/malli {:mvn/version "0.14.0"}
+        clj-http/clj-http {:mvn/version "3.12.3"}
+        cheshire/cheshire {:mvn/version "5.12.0"}}
+
+ :paths ["src" "test"
+         "../../bricks/core/test"
+         "../../bricks/registry/test"
+         "../../bricks/malli/test"
+         "../../bricks/client/test"
+         "../../bricks/macros/test"
+         "../../bases/api/test"
+         "../../development"]
+
+ :aliases {:dev {:extra-paths ["../../development"]}
+
+           :poly {:replace-deps {polylith/clj-poly {:mvn/version "0.2.20"}}
+                  :main-opts ["-m" "polylith.clj.core.main"]}}}

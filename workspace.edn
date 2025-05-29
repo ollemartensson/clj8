@@ -1,9 +1,24 @@
 {:top-namespace "clj8"
  :interface-ns "interface"
- :default-profile-name "default"
  :compact-views #{}
  :vcs {:name "git"
        :auto-add false}
  :tag-patterns {:stable "stable-*"
                 :release "v[0-9]*"}
- :projects {"development" {:alias "dev"}}}
+ :projects {"development" {:alias "dev"}}
+ :ws-dir "."
+ :ws-type "poly"
+
+ ;; Define our bricks as components
+ :components {"core" {:interface "core"}
+              "registry" {:interface "registry"}
+              "malli" {:interface "malli"}
+              "client" {:interface "client"}
+              "macros" {:interface "macros"}}
+
+ ;; Define interfaces for our bricks
+ :interfaces {"core" {:definitions ["clj8.core.core"]}
+              "registry" {:definitions ["clj8.registry.registry"]}
+              "malli" {:definitions ["clj8.malli.malli"]}
+              "client" {:definitions ["clj8.client.client"]}
+              "macros" {:definitions ["clj8.macros.macros"]}}}

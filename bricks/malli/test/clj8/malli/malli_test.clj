@@ -56,61 +56,61 @@
           schema-with-ref {"$ref" "#/components/schemas/Pod"}
           result (malli/convert-schema schema-with-ref spec)]
       (is (vector? result))
-      (is (= :map (first result)))))
+      (is (= :map (first result))))))
 
-  (deftest extract-schemas-test
-    (testing "Extracts and converts schemas from OpenAPI spec"
-      (let [spec {"components" {"schemas" {"Pod" {"type" "object"
-                                                  "properties" {"name" {"type" "string"}}}
-                                           "Service" {"type" "object"
-                                                      "properties" {"port" {"type" "integer"}}}}}}
-            schemas (malli/extract-schemas spec)]
-        (is (= 2 (count schemas)))
-        (is (contains? schemas :Pod))
-        (is (contains? schemas :Service)))))
+(deftest extract-schemas-test
+  (testing "Extracts and converts schemas from OpenAPI spec"
+    (let [spec {"components" {"schemas" {"Pod" {"type" "object"
+                                                "properties" {"name" {"type" "string"}}}
+                                         "Service" {"type" "object"
+                                                    "properties" {"port" {"type" "integer"}}}}}}
+          schemas (malli/extract-schemas spec)]
+      (is (= 2 (count schemas)))
+      (is (contains? schemas :Pod))
+      (is (contains? schemas :Service)))))
 
-  (deftest validate-with-schema-test
-    (testing "Validates data against Malli schema"
-      (let [schema [:map [:name :string] [:age {:optional true} :int]]
-            valid-data {:name "Alice" :age 30}
-            invalid-data {:name 123}]
+(deftest validate-with-schema-test
+  (testing "Validates data against Malli schema"
+    (let [schema [:map [:name :string] [:age {:optional true} :int]]
+          valid-data {:name "Alice" :age 30}
+          invalid-data {:name 123}]
 
-        (testing "valid data"
-          (let [result (malli/validate-with-schema schema valid-data)]
-            (is (:valid? result))
-            (is (= valid-data (:data result)))))
+      (testing "valid data"
+        (let [result (malli/validate-with-schema schema valid-data)]
+          (is (:valid? result))
+          (is (= valid-data (:data result)))))
 
-        (testing "invalid data"
-          (let [result (malli/validate-with-schema schema invalid-data)]
-            (is (not (:valid? result)))
-            (is (some? (:errors result))))))))
+      (testing "invalid data"
+        (let [result (malli/validate-with-schema schema invalid-data)]
+          (is (not (:valid? result)))
+          (is (some? (:errors result))))))))
 
-  (deftest generate-sample-test
-    (testing "Generates sample data from Malli schema"
-      (let [schema [:map [:name :string] [:age :int]]
-            sample (malli/generate-sample schema)]
-        (is (map? sample))
-        (is (contains? sample :name))
-        (is (contains? sample :age))
-        (is (string? (:name sample)))
-        (is (int? (:age sample))))))
+(deftest generate-sample-test
+  (testing "Generates sample data from Malli schema"
+    (let [schema [:map [:name :string] [:age :int]]
+          sample (malli/generate-sample schema)]
+      (is (map? sample))
+      (is (contains? sample :name))
+      (is (contains? sample :age))
+      (is (string? (:name sample)))
+      (is (int? (:age sample))))))
 
-  (deftest schema-registry-test
-    (testing "Schema registry caching"
-      (malli/clear-registry!)
+(deftest schema-registry-test
+  (testing "Schema registry caching"
+    (malli/clear-registry!)
 
-      (testing "register and retrieve schema"
-        (let [schema [:map [:name :string]]
-              registered (malli/register-schema! :test-schema schema)]
-          (is (= schema registered))
-          (is (= schema (malli/get-schema :test-schema)))))
+    (testing "register and retrieve schema"
+      (let [schema [:map [:name :string]]
+            registered (malli/register-schema! :test-schema schema)]
+        (is (= schema registered))
+        (is (= schema (malli/get-schema :test-schema)))))
 
-      (malli/clear-registry!)))
+    (malli/clear-registry!)))
 
-  (deftest k8s-schema-integration-test
-    (testing "Integration with K8s schemas"
-      (let [spec (reg/load-openapi-spec)
-            schemas (malli/extract-schemas spec)]
-        (is (> (count schemas) 50) "Should extract many K8s schemas")
-        (is (some? (get schemas :io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta))
-            "Should extract common K8s schemas"))))
+(deftest k8s-schema-integration-test
+  (testing "Integration with K8s schemas"
+    (let [spec (reg/load-openapi-spec)
+          schemas (malli/extract-schemas spec)]
+      (is (> (count schemas) 50) "Should extract many K8s schemas")
+      (is (some? (get schemas :io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta))
+          "Should extract common K8s schemas"))))

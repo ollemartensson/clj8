@@ -1,1 +1,5 @@
-{:paths ["src"]}
+
+{:deps {org.clojure/clojure {:mvn/version "1.11.1"}
+        clj8/registry {:local/root "../registry"}
+        clj8/client {:local/root "../client"}
+        clj8/malli {:local/root "../malli"}}}

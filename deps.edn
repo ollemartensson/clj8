@@ -1,30 +1,39 @@
-{:aliases   {:dev {:extra-paths ["development/src"]
-                   :extra-deps {org.clojure/clojure {:mvn/version "1.11.1"}
-                                clj8/registry {:local/root "bricks/registry"}
-                                clj8/malli    {:local/root "bricks/malli"}
-                                clj8/client   {:local/root "bricks/client"}
-                                clj8/macros   {:local/root "bricks/macros"}
-                                clj8/api      {:local/root "bases/api"}}}
+{:deps {org.clojure/clojure {:mvn/version "1.11.1"}}
 
-             :test {:extra-paths ["bricks/malli/test" "bricks/registry/test" "bricks/client/test" "bricks/core/test" "bricks/macros/test"
-                                  "bricks/malli/src" "bricks/registry/src" "bricks/client/src" "bricks/core/src" "bricks/macros/src"]
-                    :extra-deps  {org.clojure/test.check {:mvn/version "1.1.1"}
-                                  io.github.cognitect-labs/test-runner
-                                  {:git/url "https://github.com/cognitect-labs/test-runner.git"
-                                   :sha "705ad25bbf0228b1c38d0244a36001c2987d7337"}
-                                  ;; Additional test utilities
-                                  nubank/matcher-combinators {:mvn/version "3.9.1"} ; Better test assertions
-                                  com.gfredericks/test.chuck {:mvn/version "0.2.14"} ; More test.check utilities
-                                  org.clojure/data.json {:mvn/version "2.5.0"} ; JSON testing utilities
-                                  }
-                    :exec-fn cognitect.test-runner.api/test}
+ :aliases {:dev {:extra-paths ["development"]
+                 :extra-deps {clj8/core {:local/root "bricks/core"}
+                              clj8/registry {:local/root "bricks/registry"}
+                              clj8/malli {:local/root "bricks/malli"}
+                              clj8/client {:local/root "bricks/client"}
+                              clj8/macros {:local/root "bricks/macros"}
+                              clj8/api {:local/root "bases/api"}
 
-             :poly {:extra-deps {polylith/clj-poly {:mvn/version "0.2.21"}}
-                    :main-opts  ["-m" "polylith.clj.core.poly-cli.core"]}}
+                              ;; Test dependencies
+                              org.clojure/test.check {:mvn/version "1.1.1"}
+                              metosin/malli {:mvn/version "0.14.0"}
+                              clj-http/clj-http {:mvn/version "3.12.3"}
+                              cheshire/cheshire {:mvn/version "5.12.0"}}}
 
- :deps
- {cheshire/cheshire {:mvn/version "5.12.0"}
-  metosin/malli {:mvn/version "0.18.0"}
-  metosin/spec-tools {:mvn/version "0.10.7"}
-  org.clojure/clojure {:mvn/version "1.12.0"}
-  clj-http/clj-http {:mvn/version "3.13.0"}}}
+           :test {:extra-paths ["development"
+                                "bricks/core/test"
+                                "bricks/registry/test"
+                                "bricks/malli/test"
+                                "bricks/client/test"
+                                "bricks/macros/test"
+                                "bases/api/test"]
+                  :extra-deps {clj8/core {:local/root "bricks/core"}
+                               clj8/registry {:local/root "bricks/registry"}
+                               clj8/malli {:local/root "bricks/malli"}
+                               clj8/client {:local/root "bricks/client"}
+                               clj8/macros {:local/root "bricks/macros"}
+                               clj8/api {:local/root "bases/api"}
+
+                               ;; Test dependencies
+                               org.clojure/test.check {:mvn/version "1.1.1"}
+                               metosin/malli {:mvn/version "0.14.0"}
+                               clj-http/clj-http {:mvn/version "3.12.3"}
+                               cheshire/cheshire {:mvn/version "5.12.0"}}
+                  :exec-fn clojure.test/run-all-tests}
+
+           :poly {:replace-deps {polylith/clj-poly {:mvn/version "0.2.20"}}
+                  :main-opts ["-m" "polylith.clj.core.main"]}}}
